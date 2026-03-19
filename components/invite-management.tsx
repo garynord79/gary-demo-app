@@ -48,7 +48,7 @@ export function InviteManagement() {
     onSuccess: async () => {
       await utils.invites.list.invalidate();
     },
-    onError: (error: Error) => {
+    onError: (error: { message: string }) => {
       setFeedback(error.message);
     },
   };

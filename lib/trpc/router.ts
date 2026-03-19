@@ -13,7 +13,7 @@ import { z } from "zod";
 const inviteStatusSchema = z.enum(inviteStatuses);
 const inviteRoleSchema = z.enum(inviteRoles);
 
-function wrapInviteError(error: unknown) {
+function wrapInviteError(error: unknown): never {
   if (error instanceof Error) {
     throw new TRPCError({
       code: "BAD_REQUEST",
