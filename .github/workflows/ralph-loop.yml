@@ -1,0 +1,75 @@
+name: Ralph Loop
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      request_copilot_review:
+        description: "Post @copilot review on the selected PR"
+        required: false
+        default: false
+        type: boolean
+      pr_number:
+        description: "Pull request number to ask Copilot to review"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Biome lint
+        run: pnpm lint
+
+      - name: Vitest
+        run: pnpm test
+
+      - name: Playwright
+        run: pnpm test:e2e
+
+      - name: Build
+        run: pnpm build
+
+  copilot-review:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.request_copilot_review && inputs.pr_number != '' }}
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ask Copilot for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: gh pr comment "$PR_NUMBER" --body "@copilot review" --repo "$GITHUB_REPOSITORY"
+        shell: bash
