@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const repoRoot = path.resolve(__dirname, "..");
 const summaryPath = path.join(repoRoot, "docs", "context_summary.md");
+const ralphStatusPath = path.join(repoRoot, "docs", "ralph_status.md");
 
 function run(command, args = [], options = {}) {
   const pretty = [command, ...args].join(" ");
@@ -30,8 +31,24 @@ function runJson(command, args = []) {
 }
 
 function ensureCleanTree() {
-  const status = run("git", ["status", "--porcelain"]);
-  if (status.trim()) {
+  const ignoredPaths = new Set([
+    "AGENTS.md",
+    "HEARTBEAT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "USER.md",
+  ]);
+  const statusLines = run("git", ["status", "--porcelain"])
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  const relevantChanges = statusLines.filter((line) => {
+    const filePath = line.slice(3);
+    return !ignoredPaths.has(filePath);
+  });
+
+  if (relevantChanges.length > 0) {
     throw new Error(
       "Working tree is not clean. Commit, stash, or discard changes before running Ralph loop.",
     );
@@ -175,6 +192,193 @@ function getChecks(repo, prNumber) {
   } catch {
     return [];
   }
+}
+
+function getCommitStatuses(repo, sha) {
+  return runJson("gh", ["api", `repos/${repo}/commits/${sha}/status`]);
+}
+
+function getWorkflowRuns(repo, branch, limit = 10) {
+  return runJson("gh", [
+    "run",
+    "list",
+    "--repo",
+    repo,
+    "--branch",
+    branch,
+    "--limit",
+    String(limit),
+    "--json",
+    "databaseId,workflowName,status,conclusion,url,headBranch,displayTitle,event,createdAt",
+  ]);
+}
+
+function deriveCiStatus({ repo, prNumber, branch, sha }) {
+  const checkStatuses = {
+    pending: new Set(["PENDING", "QUEUED", "IN_PROGRESS", "WAITING"]),
+    success: new Set([
+      "SUCCESS",
+      "SUCCESSFUL",
+      "COMPLETED",
+      "NEUTRAL",
+      "SKIPPED",
+    ]),
+    failure: new Set([
+      "FAILURE",
+      "FAILED",
+      "ERROR",
+      "TIMED_OUT",
+      "CANCELLED",
+      "STARTUP_FAILURE",
+      "ACTION_REQUIRED",
+    ]),
+  };
+
+  const prChecks = getChecks(repo, prNumber);
+  if (prChecks.length > 0) {
+    const pending = prChecks.filter((check) =>
+      checkStatuses.pending.has(String(check.state).toUpperCase()),
+    );
+    const failed = prChecks.filter((check) =>
+      checkStatuses.failure.has(String(check.state).toUpperCase()),
+    );
+
+    if (failed.length > 0) {
+      return failed
+        .map(
+          (check) =>
+            `${check.workflow || "workflow"} / ${check.name}: ${check.state.toLowerCase()}`,
+        )
+        .join("; ");
+    }
+
+    if (pending.length > 0) {
+      return pending
+        .map(
+          (check) =>
+            `${check.workflow || "workflow"} / ${check.name}: ${check.state.toLowerCase()}`,
+        )
+        .join("; ");
+    }
+
+    return prChecks
+      .map(
+        (check) =>
+          `${check.workflow || "workflow"} / ${check.name}: ${check.state.toLowerCase()}`,
+      )
+      .join("; ");
+  }
+
+  if (sha) {
+    try {
+      const status = getCommitStatuses(repo, sha);
+      if (Array.isArray(status.statuses) && status.statuses.length > 0) {
+        return status.statuses
+          .map((item) => `${item.context}: ${item.state}`)
+          .join("; ");
+      }
+
+      if (status.state && status.state !== "pending") {
+        return `commit status: ${status.state}`;
+      }
+    } catch {
+      // Fall through to workflow runs.
+    }
+  }
+
+  const runs = getWorkflowRuns(repo, branch);
+  if (!runs.length) {
+    return "no CI runs found";
+  }
+
+  return runs
+    .slice(0, 3)
+    .map((run) => {
+      const outcome = run.conclusion || run.status;
+      return `${run.workflowName}: ${outcome} (${run.url})`;
+    })
+    .join("; ");
+}
+
+function formatIssueLine(issue) {
+  if (!issue) {
+    return "none";
+  }
+
+  return `#${issue.number} - ${issue.title} (${issue.url})`;
+}
+
+function formatPrLine(pr) {
+  if (!pr) {
+    return "none";
+  }
+
+  return `#${pr.number} - ${pr.title} (${pr.url})`;
+}
+
+function writeRalphStatus({ repo, issue, pr, ciStatus, nextIssue }) {
+  const content = [
+    "# Ralph Loop Status",
+    "",
+    `- Repository: ${repo}`,
+    `- Generated at: ${new Date().toISOString()}`,
+    `- Current issue: ${formatIssueLine(issue)}`,
+    `- Current PR: ${formatPrLine(pr)}`,
+    `- CI status: ${ciStatus}`,
+    `- Next issue: ${formatIssueLine(nextIssue)}`,
+    "",
+  ].join("\n");
+
+  fs.mkdirSync(path.dirname(ralphStatusPath), { recursive: true });
+  fs.writeFileSync(ralphStatusPath, content);
+  console.log(`Updated ${path.relative(repoRoot, ralphStatusPath)}`);
+}
+
+function updateRalphStatus(
+  repo,
+  currentIssue = null,
+  currentPr = null,
+  issueLimit = 20,
+) {
+  const issues = listOpenIssues(repo, issueLimit);
+  const currentIssueNumber = currentIssue?.number ?? null;
+  const nextIssue = pickIssue(
+    issues.filter((issue) => issue.number !== currentIssueNumber),
+  );
+
+  let activePr = currentPr;
+  if (!activePr && currentIssueNumber) {
+    const prs = runJson("gh", [
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      `${currentIssueNumber} in:title,body`,
+      "--json",
+      "number,title,url,headRefName",
+    ]);
+    activePr = prs[0] ?? null;
+  }
+
+  const ciStatus = activePr
+    ? deriveCiStatus({
+        repo,
+        prNumber: activePr.number,
+        branch: activePr.headRefName,
+        sha: null,
+      })
+    : "no active PR";
+
+  writeRalphStatus({
+    repo,
+    issue: currentIssue,
+    pr: activePr,
+    ciStatus,
+    nextIssue,
+  });
 }
 
 function sleep(milliseconds) {
@@ -401,6 +605,7 @@ function main() {
     : pickIssue(issues);
 
   if (!issue) {
+    updateRalphStatus(repo, null, null, args.limit);
     console.log("No eligible open issue found. Ralph loop is done for now.");
     return;
   }
@@ -412,6 +617,7 @@ function main() {
   if (!pr) {
     const localBranches = run("git", ["branch", "--list", branch]).trim();
     if (!localBranches) {
+      updateRalphStatus(repo, issue, null, args.limit);
       run("git", ["checkout", "-b", branch]);
       console.log(
         "Branch created. Implement the issue changes, commit them, and push the branch before re-running Ralph loop.",
@@ -425,6 +631,7 @@ function main() {
     run("git", ["checkout", branch]);
     const ahead = run("git", ["status", "--short", "--branch"]);
     if (!ahead.includes("origin/")) {
+      updateRalphStatus(repo, issue, null, args.limit);
       console.log(
         `Branch ${branch} exists locally but is not tracking a remote branch yet. Push it first, then re-run Ralph loop.`,
       );
@@ -434,6 +641,7 @@ function main() {
     pr = createPr(repo, issue, branch, baseBranch);
   }
 
+  updateRalphStatus(repo, issue, pr, args.limit);
   console.log(`Using PR #${pr.number}: ${pr.url}`);
   requestReview(repo, pr.number, args.reviewer);
   const checkResult = waitForChecks(
@@ -444,6 +652,7 @@ function main() {
   );
 
   if (!checkResult.ok) {
+    updateRalphStatus(repo, issue, pr, args.limit);
     process.exitCode = 1;
     return;
   }
@@ -457,6 +666,13 @@ function main() {
 
   const nextIssues = listOpenIssues(repo, args.limit);
   const nextIssue = pickIssue(nextIssues);
+  writeRalphStatus({
+    repo,
+    issue,
+    pr: mergedPr,
+    ciStatus: "merged",
+    nextIssue,
+  });
 
   if (nextIssue) {
     console.log(
