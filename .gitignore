@@ -1,8 +1,34 @@
-node_modules
-.next
-playwright-report
-test-results
-coverage
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# build artifacts
+dist/
+coverage/
+
+# test artifacts
+playwright-report/
+test-results/
+
+# environment
 .env
-.env.local
-pnpm-lock.yaml
+.env.*
+!.env.example
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# local tooling
+.openclaw/
