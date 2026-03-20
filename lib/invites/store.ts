@@ -48,7 +48,7 @@ function sortNewestFirst(a: TeamInvite, b: TeamInvite) {
 }
 
 function isExpired(invite: TeamInvite) {
-  return invite.status !== "revoked" && new Date(invite.expiresAt) <= now();
+  return invite.status === "pending" && new Date(invite.expiresAt) <= now();
 }
 
 function withDerivedStatus(invite: TeamInvite): TeamInvite {
@@ -91,6 +91,25 @@ export function seedAcceptedInvite() {
     createdAt,
     updatedAt: createdAt,
     expiresAt: createExpiryDate(new Date(createdAt)),
+  };
+
+  invites.set(invite.id, invite);
+  return invite;
+}
+
+export function seedInvite(fields: Partial<TeamInvite> = {}): TeamInvite {
+  const id = fields.id ?? createId();
+  const timestamp = now().toISOString();
+  const invite: TeamInvite = {
+    id,
+    email: `seed-${id}@example.com`,
+    role: "member",
+    status: "pending",
+    token: createToken(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    expiresAt: createExpiryDate(new Date(timestamp)),
+    ...fields,
   };
 
   invites.set(invite.id, invite);

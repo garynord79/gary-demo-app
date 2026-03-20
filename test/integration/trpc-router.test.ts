@@ -1,4 +1,8 @@
-import { resetInvites, seedAcceptedInvite } from "@/lib/invites/store";
+import {
+  resetInvites,
+  seedAcceptedInvite,
+  seedInvite,
+} from "@/lib/invites/store";
 import { appRouter } from "@/lib/trpc/router";
 import { describe, expect, it } from "vitest";
 
@@ -43,5 +47,22 @@ describe("appRouter", () => {
     expect(revokedInvites.map((invite) => invite.id)).toContain(
       createdInvite.id,
     );
+  });
+
+  it("accepted invite with past expiry date is not re-derived as expired", async () => {
+    resetInvites();
+
+    const pastExpiry = new Date(Date.now() - 1000).toISOString();
+    const seeded = seedInvite({
+      status: "accepted",
+      expiresAt: pastExpiry,
+    });
+
+    const caller = appRouter.createCaller({});
+    const all = await caller.invites.list();
+    const found = all.find((invite) => invite.id === seeded.id);
+
+    expect(found).toBeDefined();
+    expect(found?.status).toBe("accepted");
   });
 });
